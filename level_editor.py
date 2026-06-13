@@ -1,4 +1,5 @@
 import bpy
+import math
 
 # ブレンダーに登録するアドオン情報
 bl_info = {
@@ -37,10 +38,43 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
     bl_description = "ICO球を生成します"
     bl_options = {'REGISTER', 'UNDO'}
 
-    # メニューを実行したときに呼ばれる関数
     def execute(self, context):
         bpy.ops.mesh.primitive_ico_sphere_add()
         print("ICO球を生成しました。")
+        return {'FINISHED'}
+
+# --- オペレータクラス：シーン出力 ---
+class MYADDON_OT_export_scene(bpy.types.Operator):
+    bl_idname = "myaddon.myaddon_ot_export_scene"
+    bl_label = "シーン出力"
+    bl_description = "シーン情報をExportします"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        print("シーン情報をExportします")
+        
+        for obj in context.scene.objects:
+            print(obj.type + " - " + obj.name)
+
+            # ローカル行列からトランスフォーム要素を分解
+            trans, rot, scale = obj.matrix_local.decompose()
+            rot = rot.to_euler()
+
+            # ラジアンから度数法（デグリー）に変換
+            rot.x = math.degrees(rot.x)
+            rot.y = math.degrees(rot.y)
+            rot.z = math.degrees(rot.z)
+
+            print("Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
+            print("Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
+            print("Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
+
+            if obj.parent:
+                print(f"  Parent: {obj.parent.name}")
+            print()
+            
+        print("シーン情報をExportしました")
+        self.report({'INFO'}, "シーン情報をExportしました")
         return {'FINISHED'}
 
 # --- メニュークラス ---
@@ -49,45 +83,44 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
     bl_label = "MyMenu"
     bl_description = "拡張メニュー by " + bl_info["author"]
 
-    # メニュー内の描画設定
     def draw(self, context):
         self.layout.operator(MYADDON_OT_stretch_vertex.bl_idname, text=MYADDON_OT_stretch_vertex.bl_label)
-        self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text=MYADDON_OT_create_ico_sphere.bl_label) # 変更：メニューへの登録を追加
+        self.layout.operator(MYADDON_OT_create_ico_sphere.bl_idname, text=MYADDON_OT_create_ico_sphere.bl_label) 
+        self.layout.operator(MYADDON_OT_export_scene.bl_idname, text=MYADDON_OT_export_scene.bl_label)
 
-    # サブメニューの追加処理
     def submenu(self, context):
         self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
 
 # 登録対象のクラス一覧
-# 変更：Blenderに登録するクラスリストへの登録を追加
 classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
+    MYADDON_OT_export_scene,
     TOPBAR_MT_my_menu,
 )
 
 # アドオン有効化時の処理
 def register():
-    # クラスの登録
     for cls in classes:
         bpy.utils.register_class(cls)
-    # トップバーのメニューにサブメニューを追加
     bpy.types.TOPBAR_MT_editor_menus.append(TOPBAR_MT_my_menu.submenu)
     print("レベルエディタが有効化されました。")
 
 # アドオン無効化時の処理
 def unregister():
-    # トップバーのメニューからサブメニューを削除
-    try:
-        bpy.types.TOPBAR_MT_editor_menus.remove(TOPBAR_MT_my_menu.submenu)
-    except:
-        pass
-    # クラスの登録解除
-    for cls in classes:
+    if hasattr(bpy.types, "TOPBAR_MT_editor_menus"):
         try:
-            bpy.utils.unregister_class(cls)
-        except:
-            pass
+            bpy.types.TOPBAR_MT_editor_menus.remove(TOPBAR_MT_my_menu.submenu)
+        except Exception as e:
+            print(f"メニュー削除エラー: {e}")
+            
+    for cls in classes:
+        if hasattr(bpy.utils, "is_class_registered") and bpy.utils.is_class_registered(cls):
+            try:
+                bpy.utils.unregister_class(cls)
+            except Exception as e:
+                print(f"クラス解除エラー ({cls.__name__}): {e}")
+                
     print("レベルエディタが無効化されました。")
 
 # スクリプト直接実行時の処理
