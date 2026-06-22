@@ -44,6 +44,18 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
         print("ICO球を生成しました。")
         return {'FINISHED'}
 
+# --- オペレータクラス：カスタムプロパティ['file_name']追加 ---
+class MYADDON_OT_add_filename(bpy.types.Operator):
+    """['file_name']カスタムプロパティを追加します"""
+    bl_idname = "myaddon.myaddon_ot_add_filename"
+    bl_label = "FileName 追加"
+    bl_description = "['file_name']カスタムプロパティを追加します"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.object["file_name"] = ""
+        return {"FINISHED"}
+
 # --- オペレータクラス：シーン出力 ---
 class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "myaddon.myaddon_ot_export_scene"
@@ -59,16 +71,12 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
 
     def parse_scene_recursive(self, file, obj, level):
         """シーン解析用再帰関数"""
-        
-        # 深さ分インデントする（タブを挿入）
         indent = ''
         for i in range(level):
             indent += "\t"
         
-        # オブジェクト名書き込み
-        self.write_and_print(file, indent + obj.type + " - " + obj.name)
+        self.write_and_print(file, indent + obj.type)
         
-        # 行列分解と回転角変換
         trans, rot, scale = obj.matrix_local.decompose()
         rot = rot.to_euler()
 
@@ -76,24 +84,24 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         rot.y = math.degrees(rot.y)
         rot.z = math.degrees(rot.z)
 
-        # トランスフォーム情報を表示
-        self.write_and_print(file, indent + "  Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
-        self.write_and_print(file, indent + "  Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
-        self.write_and_print(file, indent + "  Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
+        self.write_and_print(file, indent + "  T %f %f %f" % (trans.x, trans.y, trans.z))
+        self.write_and_print(file, indent + "  R %f %f %f" % (rot.x, rot.y, rot.z))
+        self.write_and_print(file, indent + "  S %f %f %f" % (scale.x, scale.y, scale.z))
+        
+        if "file_name" in obj:
+            self.write_and_print(file, indent + "  N %s" % obj["file_name"])
+            
+        self.write_and_print(file, indent + "  END")
         self.write_and_print(file, indent + '')
 
-        # 子ノードへ進む（深さが1上がる）
         for child in obj.children:
             self.parse_scene_recursive(file, child, level + 1)
 
     def export(self, filepath):
         """ファイルに出力"""
         print("シーン情報出力開始... %r" % filepath)
-        
         with open(filepath, "wt", encoding="utf-8") as file:
-            file.write("SCENE\n") # 🌟【修正】資料の1行目に合わせて改行を調整
-            
-            # 🌟【修正】二重出力を防ぐため、親を持たない（ルート）オブジェクトのみを最初に呼び出す
+            file.write("SCENE\n")
             for obj in bpy.context.scene.objects:
                 if obj.parent is None:
                     self.parse_scene_recursive(file, obj, 0)
@@ -104,6 +112,18 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         print("シーン情報をExportしました")
         self.report({'INFO'}, "シーン情報をExportしました")
         return {'FINISHED'}
+
+# --- パネルクラス：ファイル名 ---
+class OBJECT_PT_file_name(bpy.types.Panel):
+    """オブジェクトのファイルネームパネル"""
+    bl_idname = "OBJECT_PT_file_name"
+    bl_label = "FileName"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+
+    def draw(self, context):
+        self.layout.operator(MYADDON_OT_add_filename.bl_idname, text=MYADDON_OT_add_filename.bl_label)
 
 # --- メメニュークラス ---
 class TOPBAR_MT_my_menu(bpy.types.Menu):
@@ -124,7 +144,9 @@ classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
     MYADDON_OT_export_scene,
+    MYADDON_OT_add_filename,
     TOPBAR_MT_my_menu,
+    OBJECT_PT_file_name,
 )
 
 # アドオン有効化時の処理
