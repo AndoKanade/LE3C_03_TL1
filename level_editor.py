@@ -1,4 +1,5 @@
 import bpy
+import bpy_extras
 import math
 
 # ブレンダーに登録するアドオン情報
@@ -44,40 +45,67 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
         return {'FINISHED'}
 
 # --- オペレータクラス：シーン出力 ---
-class MYADDON_OT_export_scene(bpy.types.Operator):
+class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "myaddon.myaddon_ot_export_scene"
     bl_label = "シーン出力"
     bl_description = "シーン情報をExportします"
     bl_options = {'REGISTER', 'UNDO'}
 
+    filename_ext = ".scene"
+
+    def write_and_print(self, file, text):
+        file.write(text + "\n")
+        print(text)
+
+    def parse_scene_recursive(self, file, obj, level):
+        """シーン解析用再帰関数"""
+        
+        # 深さ分インデントする（タブを挿入）
+        indent = ''
+        for i in range(level):
+            indent += "\t"
+        
+        # オブジェクト名書き込み
+        self.write_and_print(file, indent + obj.type + " - " + obj.name)
+        
+        # 行列分解と回転角変換
+        trans, rot, scale = obj.matrix_local.decompose()
+        rot = rot.to_euler()
+
+        rot.x = math.degrees(rot.x)
+        rot.y = math.degrees(rot.y)
+        rot.z = math.degrees(rot.z)
+
+        # トランスフォーム情報を表示
+        self.write_and_print(file, indent + "  Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
+        self.write_and_print(file, indent + "  Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
+        self.write_and_print(file, indent + "  Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
+        self.write_and_print(file, indent + '')
+
+        # 子ノードへ進む（深さが1上がる）
+        for child in obj.children:
+            self.parse_scene_recursive(file, child, level + 1)
+
+    def export(self, filepath):
+        """ファイルに出力"""
+        print("シーン情報出力開始... %r" % filepath)
+        
+        with open(filepath, "wt", encoding="utf-8") as file:
+            file.write("SCENE\n") # 🌟【修正】資料の1行目に合わせて改行を調整
+            
+            # 🌟【修正】二重出力を防ぐため、親を持たない（ルート）オブジェクトのみを最初に呼び出す
+            for obj in bpy.context.scene.objects:
+                if obj.parent is None:
+                    self.parse_scene_recursive(file, obj, 0)
+
     def execute(self, context):
         print("シーン情報をExportします")
-        
-        for obj in context.scene.objects:
-            print(obj.type + " - " + obj.name)
-
-            # ローカル行列からトランスフォーム要素を分解
-            trans, rot, scale = obj.matrix_local.decompose()
-            rot = rot.to_euler()
-
-            # ラジアンから度数法（デグリー）に変換
-            rot.x = math.degrees(rot.x)
-            rot.y = math.degrees(rot.y)
-            rot.z = math.degrees(rot.z)
-
-            print("Trans(%f,%f,%f)" % (trans.x, trans.y, trans.z))
-            print("Rot(%f,%f,%f)" % (rot.x, rot.y, rot.z))
-            print("Scale(%f,%f,%f)" % (scale.x, scale.y, scale.z))
-
-            if obj.parent:
-                print(f"  Parent: {obj.parent.name}")
-            print()
-            
+        self.export(self.filepath)
         print("シーン情報をExportしました")
         self.report({'INFO'}, "シーン情報をExportしました")
         return {'FINISHED'}
 
-# --- メニュークラス ---
+# --- メメニュークラス ---
 class TOPBAR_MT_my_menu(bpy.types.Menu):
     bl_idname = "TOPBAR_MT_my_menu"
     bl_label = "MyMenu"
@@ -123,6 +151,5 @@ def unregister():
                 
     print("レベルエディタが無効化されました。")
 
-# スクリプト直接実行時の処理
 if __name__ == "__main__":
     register()
