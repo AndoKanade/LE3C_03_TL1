@@ -48,6 +48,32 @@ class MYADDON_OT_create_ico_sphere(bpy.types.Operator):
         print("ICO球を生成しました。")
         return {'FINISHED'}
 
+# --- オペレータクラス：カスタムプロパティ['file_name']追加 ---
+class MYADDON_OT_add_filename(bpy.types.Operator):
+    """['file_name']カスタムプロパティを追加します"""
+    bl_idname = "myaddon.myaddon_ot_add_filename"
+    bl_label = "FileName 追加"
+    bl_description = "['file_name']カスタムプロパティを追加します"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.object["file_name"] = ""
+        return {"FINISHED"}
+
+# --- オペレータクラス：コライダーカスタムプロパティ追加 ---
+class MYADDON_OT_add_collider(bpy.types.Operator):
+    bl_idname = "myaddon.myaddon_ot_add_collider"
+    bl_label = "コライダー 追加"
+    bl_description = "['collider']カスタムプロパティを追加します"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.object["collider"] = "BOX"
+        context.object["collider_center"] = mathutils.Vector((0, 0, 0))
+        context.object["collider_size"] = mathutils.Vector((2, 2, 2))
+        return {"FINISHED"}
+
+# --- コライダー描画クラス ---
 # --- コライダー描画クラス ---
 class DrawCollider:
     handle = None
@@ -58,87 +84,90 @@ class DrawCollider:
         
         # GPUに渡す最終的な全辺（ライン）のインデックスリスト
         indices = []
-        
-        # オフセットを記録するためのリスト
-        offsets = []
+
+        # 立方体の中心（オブジェクトの位置）から、各頂点がどの方向にどれくらいずれているか（ローカル座標）
+        offsets = [
+            [-0.5, -0.5, -0.5], # 0番目: 左下前
+            [ 0.5, -0.5, -0.5], # 1番目: 右下前
+            [-0.5,  0.5, -0.5], # 2番目: 左上前
+            [ 0.5,  0.5, -0.5], # 3番目: 右上前
+            [-0.5, -0.5,  0.5], # 4番目: 左下奥
+            [ 0.5, -0.5,  0.5], # 5番目: 右下奥
+            [-0.5,  0.5,  0.5], # 6番目: 左上奥
+            [ 0.5,  0.5,  0.5], # 7番目: 右上奥
+        ]
 
         # シーン内の全てのオブジェクトを1個ずつ走査するループ
         for obj in bpy.context.scene.objects:
+
+            # コライダープロパティがなければ、描画をスキップ
+            if not "collider" in obj:
+                continue
+
+            # --- スライド1枚目「プロパティ取得」の処理 ---
+            # 中心点、サイズの変数を宣言（初期値を入れておく）
+            center = mathutils.Vector((0, 0, 0))
+            size = mathutils.Vector((2, 2, 2))
+
+            # カスタムプロパティから値を取得して変数に格納
+            center[0] = obj["collider_center"][0]
+            center[1] = obj["collider_center"][1]
+            center[2] = obj["collider_center"][2]
             
-            # このオブジェクトの頂点データが全体の何番目から始まるかを記録（オフセット計算）
-            current_total_vertices = len(vertices["pos"])
-            offset = current_total_vertices
-            offsets.append(offset)
-            
-            # 立方体1個分（ローカル座標系）の8つの頂点を定義
-            v0 = [-1.0, -1.0, -1.0] # 手前・左・下
-            v1 = [ 1.0, -1.0, -1.0] # 手前・右・下
-            v2 = [-1.0,  1.0, -1.0] # 奥・左・下
-            v3 = [ 1.0,  1.0, -1.0] # 奥・右・下
-            v4 = [-1.0, -1.0,  1.0] # 手前・左・上
-            v5 = [ 1.0, -1.0,  1.0] # 手前・右・上
-            v6 = [-1.0,  1.0,  1.0] # 奥・左・上
-            v7 = [ 1.0,  1.0,  1.0] # 奥・右・上
-            
-            local_vertices = [v0, v1, v2, v3, v4, v5, v6, v7]
-            
-            # このオブジェクトのワールド行列（位置・回転・縮小のすべての情報）を取得
-            mat = obj.matrix_world
-            
-            # ローカル頂点を1つずつワールド座標に変換して全体の頂点リストに追加するループ
-            for v in local_vertices:
-                # 3つの数値をBlenderのVector型に変換
-                local_pos = mathutils.Vector(v)
+            size[0] = obj["collider_size"][0]
+            size[1] = obj["collider_size"][1]
+            size[2] = obj["collider_size"][2]
+
+            # 追加前の頂点数を開始インデックスとして記録
+            start = len(vertices["pos"])
+
+            # --- スライド2枚目「座標に反映」のループ処理 ---
+            # Boxの8頂点分回す
+            for offset in offsets:
                 
-                # 行列とベクトルを掛け算してワールド座標系に変換
-                world_pos = mat @ local_pos
+                # ① object.location の代わりにコライダーの中心点を使う
+                # カスタムプロパティから取得したローカルの中心座標をコピー
+                pos = copy.copy(center)
                 
-                # 変換された座標を [x, y, z] のリスト形式にして全体のリストに追加
+                # 中心点を基準に各頂点ごとにずらす（ローカル座標系での計算）
+                pos[0] += offset[0] * size[0]
+                pos[1] += offset[1] * size[1]
+                pos[2] += offset[2] * size[2]
+                
+                # ② オブジェクトのワールド行列を取得して掛け算し、ワールド座標に変換
+                # これによってオブジェクトのスケール、回転、平行移動がすべて適用される
+                mat = obj.matrix_world
+                world_pos = mat @ pos
+                
+                # 頂点データリストに座標を追加
                 vertices["pos"].append([world_pos.x, world_pos.y, world_pos.z])
-                
-            # 立方体の12本の辺を構成する頂点のインデックス組み合わせ（ローカル基準）
-            # 下面の4辺
-            edge1 = [0, 1]
-            edge2 = [1, 3]
-            edge3 = [3, 2]
-            edge4 = [2, 0]
-            # 上面の4辺
-            edge5 = [4, 5]
-            edge6 = [5, 7]
-            edge7 = [7, 6]
-            edge8 = [6, 4]
-            # 柱となる垂直な4辺
-            edge9 = [0, 4]
-            edge10 = [1, 5]
-            edge11 = [2, 6]
-            edge12 = [3, 7]
-            
-            local_indices = [
-                edge1, edge2, edge3, edge4,
-                edge5, edge6, edge7, edge8,
-                edge9, edge10, edge11, edge12
-            ]
-            
-            # 全体の頂点リストの中での正しいインデックス（オフセット加算）を計算して追加するループ
-            for edge in local_indices:
-                start_index = edge[0] + offset
-                end_index = edge[1] + offset
-                indices.append([start_index, end_index])
 
-        # 描画に使うシェーダ（単色塗りつぶし）を準備
+            # 立方体の12本の辺を構成する頂点のインデックス組み合わせ（各行の start を加算）
+            # 前面を構成する辺の頂点インデックス
+            indices.append([start + 0, start + 1])
+            indices.append([start + 2, start + 3])
+            indices.append([start + 0, start + 2])
+            indices.append([start + 1, start + 3])
+            
+            # 奥面を構成する辺の頂点インデックス
+            indices.append([start + 4, start + 5])
+            indices.append([start + 6, start + 7])
+            indices.append([start + 4, start + 6])
+            indices.append([start + 5, start + 7])
+            
+            # 手前と奥を繋ぐ辺の頂点インデックス
+            indices.append([start + 0, start + 4])
+            indices.append([start + 1, start + 5])
+            indices.append([start + 2, start + 6])
+            indices.append([start + 3, start + 7])
+
+        # 描画処理
         shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-
-        # シェーダ、描画タイプ（ライン）、頂点とインデックスをまとめてバッチを作成
         batch = gpu_extras.batch.batch_for_shader(shader, "LINES", vertices, indices=indices)
-
-        # 線の色を設定（水色：R=0.5, G=1.0, B=1.0, A=1.0）
         color = [0.5, 1.0, 1.0, 1.0]
         
-        # シェーダをアクティブにして色を適用
         shader.bind()
         shader.uniform_float("color", color)
-
-        # 3Dビューポートにバッチを描画
         batch.draw(shader)
 
 # --- オペレータクラス：シーン出力 ---
@@ -175,6 +204,16 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         
         if "file_name" in obj:
             self.write_and_print(file, indent + "  N %s" % obj["file_name"])
+
+        if "collider"in obj:
+
+            self.writte_and_print(file, indent + "C %s" & obj["collider"])   
+            temp_str = indent + "CC %f %f %f" 
+            temp_str%= (obj["collider_center"][0],obj["collider_center"][1],obj["collider_center"][2])
+            self.write_end_print(file, temp_str)
+            temp_str = indent + "CC %f %f %f" 
+            temp_str%= (obj["collider_size"][0],obj["collider_size"][1],obj["collider_size"][2])
+
             
         self.write_and_print(file, indent + "  END")
         self.write_and_print(file, indent + '')
@@ -198,18 +237,6 @@ class MYADDON_OT_export_scene(bpy.types.Operator, bpy_extras.io_utils.ExportHelp
         self.report({'INFO'}, "シーン情報をExportしました")
         return {'FINISHED'}
 
-# --- オペレータクラス：カスタムプロパティ['file_name']追加 ---
-class MYADDON_OT_add_filename(bpy.types.Operator):
-    """['file_name']カスタムプロパティを追加します"""
-    bl_idname = "myaddon.myaddon_ot_add_filename"
-    bl_label = "FileName 追加"
-    bl_description = "['file_name']カスタムプロパティを追加します"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        context.object["file_name"] = ""
-        return {"FINISHED"}
-
 # --- パネルクラス：ファイル名 ---
 class OBJECT_PT_file_name(bpy.types.Panel):
     """オブジェクトのファイルネームパネル"""
@@ -221,6 +248,22 @@ class OBJECT_PT_file_name(bpy.types.Panel):
 
     def draw(self, context):
         self.layout.operator(MYADDON_OT_add_filename.bl_idname, text=MYADDON_OT_add_filename.bl_label)
+
+# --- パネルクラス：コライダー ---
+class OBJECT_PT_collider(bpy.types.Panel):
+    bl_idname = "OBJECT_PT_collider"
+    bl_label = "Collider"
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "object"
+
+    def draw(self, context):
+        if "collider" in context.object:
+            self.layout.prop(context.object, '["collider"]', text="Type")
+            self.layout.prop(context.object, '["collider_center"]', text="Center")
+            self.layout.prop(context.object, '["collider_size"]', text="Size")
+        else:
+            self.layout.operator(MYADDON_OT_add_collider.bl_idname, text=MYADDON_OT_add_collider.bl_label)
 
 # --- メメニュークラス ---
 class TOPBAR_MT_my_menu(bpy.types.Menu):
@@ -237,13 +280,16 @@ class TOPBAR_MT_my_menu(bpy.types.Menu):
         self.layout.menu(TOPBAR_MT_my_menu.bl_idname)
 
 # 登録対象のクラス一覧
+# 目印：MYADDON_OT_add_collider の後ろに不足していたカンマを修正
 classes = (
     MYADDON_OT_stretch_vertex,
     MYADDON_OT_create_ico_sphere,
     MYADDON_OT_export_scene,
     MYADDON_OT_add_filename,
+    MYADDON_OT_add_collider,
     TOPBAR_MT_my_menu,
     OBJECT_PT_file_name,
+    OBJECT_PT_collider,
 )
 
 # アドオン有効化時の処理
@@ -251,9 +297,7 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_editor_menus.append(TOPBAR_MT_my_menu.submenu)
-
-    DrawCollider.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollider.draw_collider,(),"WINDOW","POST_VIEW")
-
+    DrawCollider.handle = bpy.types.SpaceView3D.draw_handler_add(DrawCollider.draw_collider, (), "WINDOW", "POST_VIEW")
     print("レベルエディタが有効化されました。")
 
 # アドオン無効化時の処理
@@ -261,9 +305,7 @@ def unregister():
     if hasattr(bpy.types, "TOPBAR_MT_editor_menus"):
         try:
             bpy.types.TOPBAR_MT_editor_menus.remove(TOPBAR_MT_my_menu.submenu)
-
-            bpy.types.SpaceView3D.draw_handler_remove(DrawCollider.handle,"WINDOW")
-
+            bpy.types.SpaceView3D.draw_handler_remove(DrawCollider.handle, "WINDOW")
         except Exception as e:
             print(f"メニュー削除エラー: {e}")
             
