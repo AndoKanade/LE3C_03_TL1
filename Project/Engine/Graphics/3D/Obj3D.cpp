@@ -1,0 +1,163 @@
+#include "Obj3D.h"
+#include "Obj3dCommon.h"
+#include "CameraManager.h"
+#include "Camera.h"
+#include "Model.h"
+#include "TextureManager.h"
+#include "SrvManager.h"
+#include "Logger.h"
+#include "Sprite.h"
+#include "MyMath.h"
+#include "ModelManager.h"
+#include <cassert>
+
+//=============================================================================
+// 初期化
+//=============================================================================
+
+void Obj3D::Initialize(Obj3dCommon* object3dCommon){
+    this->object3dCommon = object3dCommon;
+    this->camera = object3dCommon->GetDefaultCamera();
+
+    // マテリアル用リソースの確保と初期設定
+    materialResource = object3dCommon->GetDxCommon()->CreateBufferResource(sizeof(Model::Material));
+    materialResource->Map(0,nullptr,reinterpret_cast<void**>(&materialData));
+    if(materialData){
+        materialData->color = {1.0f, 1.0f, 1.0f, 1.0f};
+        materialData->enableLighting = 1;
+        materialData->uvTransform = MakeIdentity4x4();
+        materialData->shininess = 20.0f;
+        materialData->environmentCoefficient = 0.0f;
+    }
+
+    transform = {{1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}};
+    CreateTransformationMatrixData();
+}
+
+//=============================================================================
+// 更新処理
+//=============================================================================
+
+void Obj3D::Update(){
+    // 1. カメラ取得
+    if(!camera && object3dCommon){
+        camera = object3dCommon->GetDefaultCamera();
+    }
+    if(!camera){
+        Logger::Log("Camera is still NULL!!\n");
+    }
+
+    // 2. 行列計算 (Local -> World)
+    Matrix4x4 localMatrix;
+    if(isUseQuaternion_){
+        localMatrix = Multiply(Multiply(MakeScaleMatrix(transform.scale),MakeRotateMatrix(quaternion_)),MakeTranslateMatrix(transform.translate));
+    } else{
+        localMatrix = MakeAffineMatrix(transform.scale,transform.rotate,transform.translate);
+    }
+
+    Matrix4x4 worldMatrix = localMatrix;
+    if(auto parentPtr = parent_.lock()){
+        worldMatrix = Multiply(localMatrix,parentPtr->GetWorldMatrix());
+    }
+
+    // 3. カメラ合成 (WVP)
+    Matrix4x4 worldViewProjectionMatrix = worldMatrix;
+    if(Camera* cameraPtr = camera?camera:object3dCommon->GetDefaultCamera()){
+        worldViewProjectionMatrix = Multiply(worldMatrix,cameraPtr->GetViewProjectionMatrix());
+    }
+
+    // 4. GPUバッファ更新
+    transformationMatrixData->WVP = worldViewProjectionMatrix;
+    transformationMatrixData->World = worldMatrix;
+    transformationMatrixData->WorldInverseTranspose = Transpose(Inverse(worldMatrix));
+
+    // 5. アニメーションとスキニング更新
+    if(isSkinning_){
+        animationTime_ = std::fmod(animationTime_ + (1.0f / 60.0f),animation_.duration);
+        skeleton_.ApplyAnimation(animation_,animationTime_);
+        skeleton_.Update();
+
+        if(auto* commandList = object3dCommon->GetDxCommon()->GetCommandList()){
+            skinCluster_.Update(skeleton_,commandList,object3dCommon,skinCluster_.GetSkinningInfoAddress());
+        }
+    }
+}
+
+//=============================================================================
+// 描画処理
+//=============================================================================
+
+void Obj3D::Draw(){
+    if(model == nullptr){
+        return;
+    }
+
+    auto* commandList = object3dCommon->GetDxCommon()->GetCommandList();
+    auto* lightRes = ModelManager::GetInstance()->GetModelCommon()->GetLightResource();
+    Camera* activeCamera = CameraManager::GetInstance()->GetActiveCamera();
+    uint32_t skyboxSRVIndex = TextureManager::GetInstance()->GetSrvIndex("resource/Skybox/rostock_laage_airport_4k.dds");
+
+    // パイプライン切り替え
+    if(isSkinning_){
+        commandList->SetGraphicsRootSignature(object3dCommon->GetSkinningRootSignature());
+        commandList->SetPipelineState(object3dCommon->GetSkinningGraphicsPipelineState());
+    } else{
+        commandList->SetGraphicsRootSignature(object3dCommon->GetRootSignature());
+        commandList->SetPipelineState(object3dCommon->GetGraphicsPipelineState());
+    }
+
+    // 共通パラメータセット
+    commandList->SetGraphicsRootConstantBufferView(0,materialResource->GetGPUVirtualAddress());
+    commandList->SetGraphicsRootConstantBufferView(1,transformationMatrixResource->GetGPUVirtualAddress());
+    commandList->SetGraphicsRootDescriptorTable(2,SrvManager::GetInstance()->GetGPUDescriptorHandle(model->GetModelData().material.textureIndex));
+    commandList->SetGraphicsRootDescriptorTable(3,SrvManager::GetInstance()->GetGPUDescriptorHandle(skyboxSRVIndex));
+    commandList->SetGraphicsRootConstantBufferView(4,lightRes->GetGPUVirtualAddress());
+
+    if(activeCamera) commandList->SetGraphicsRootConstantBufferView(5,activeCamera->GetGPUVirtualAddress());
+    commandList->SetGraphicsRootConstantBufferView(6,object3dCommon->GetPointLightDataGPU());
+    commandList->SetGraphicsRootConstantBufferView(7,object3dCommon->GetSpotLightDataGPU());
+
+    // 描画実行
+    if(isSkinning_){
+        commandList->SetGraphicsRootShaderResourceView(8,skinCluster_.GetPaletteAddress());
+        model->Draw(skyboxSRVIndex,activeCamera?activeCamera->GetGPUVirtualAddress():0,&skinCluster_);
+    } else{
+        model->Draw(skyboxSRVIndex,activeCamera?activeCamera->GetGPUVirtualAddress():0);
+    }
+}
+
+//=============================================================================
+// セッター・その他ユーティリティ
+//=============================================================================
+
+void Obj3D::SetModel(const std::string& filePath){
+    model = ModelManager::GetInstance()->FindModel(filePath);
+}
+
+void Obj3D::SetParent(const std::weak_ptr<Obj3D>& parent){
+    this->parent_ = parent;
+}
+
+void Obj3D::CreateTransformationMatrixData(){
+    size_t sizeInBytes = (sizeof(TransformationMatrix) + 0xff) & ~0xff;
+    transformationMatrixResource = object3dCommon->GetDxCommon()->CreateBufferResource(sizeInBytes);
+    transformationMatrixResource->Map(0,nullptr,reinterpret_cast<void**>(&transformationMatrixData));
+
+    *transformationMatrixData = {MakeIdentity4x4(), MakeIdentity4x4(), MakeIdentity4x4()};
+}
+
+void Obj3D::CreateMaterialData(){
+    materialResource = object3dCommon->GetDxCommon()->CreateBufferResource(sizeof(Model::Material));
+    materialResource->Map(0,nullptr,reinterpret_cast<void**>(&materialData));
+}
+
+void Obj3D::LoadAnimation(const std::string& directoryPath,const std::string& filename){
+    if(!model) return;
+
+    animation_ = LoadAnimationFile(directoryPath,filename);
+    animationTime_ = 0.0f;
+
+    skeleton_.Create(model->GetRootNode());
+    skinCluster_.Initialize(object3dCommon->GetDxCommon(),model->GetModelData(),skeleton_);
+    isSkinning_ = true;
+}
